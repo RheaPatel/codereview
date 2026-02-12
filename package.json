@@ -1,0 +1,43 @@
+{
+  "name": "decision-memory",
+  "version": "0.1.0",
+  "description": "Automatically capture, store, and surface architectural decisions made during AI-assisted coding sessions",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "decision-memory": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "start": "node dist/index.js",
+    "lint": "tsc --noEmit"
+  },
+  "keywords": [
+    "decisions",
+    "architecture",
+    "mcp",
+    "claude",
+    "adr"
+  ],
+  "author": "rheapatel",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "commander": "^13.1.0",
+    "gray-matter": "^4.0.3",
+    "minimatch": "^10.0.1",
+    "nanoid": "^5.1.5",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.4",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

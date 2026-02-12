@@ -1,0 +1,562 @@
+# decision-memory
+
+Automatically capture, store, and surface architectural decisions made during AI-assisted coding sessions.
+
+When you're building with an AI coding assistant — Claude Code, GitHub Copilot CLI, or anything else — dozens of architectural decisions get made in conversation. "Use Zod for validation." "Put auth middleware in `src/middleware/`." "Prefer composition over inheritance in the data layer." These decisions live in chat history and vanish when the session ends.
+
+**decision-memory** solves this. It records decisions as structured markdown files, indexes them by file scope, and surfaces relevant ones when you (or your AI) touch affected code. It's advisory, not blocking — a nudge that says "hey, 2 weeks ago you decided to use Zod here, and now you're adding Joi. Want to proceed?"
+
+## How it works
+
+```
+AI Coding Session (Claude Code / Copilot CLI / any agent)
+       |
+  +---------+----------+
+  |                    |
+MCP Server          Hooks / CLI
+(record/query)      (surface warnings)
+  |                    |
+  +--------+-----------+
+           |
+     DecisionStore
+           |
+     .decisions/
+     (markdown + JSON index)
+```
+
+1. **Record**: During a session, decisions are captured — either explicitly via a command, or automatically by the AI calling the `record_decision` tool
+2. **Store**: Each decision becomes a markdown file with YAML frontmatter in `.decisions/active/`, plus a generated `index.json` for fast lookups
+3. **Surface**: When code is edited, relevant decisions are surfaced as advisory warnings — the AI sees them in context and can warn you about conflicts
+
+## Quick start
+
+### Install
+
+```bash
+npm install -g decision-memory
+```
+
+Or use without installing:
+
+```bash
+npx decision-memory init
+```
+
+### Initialize in your project
+
+```bash
+cd your-project
+decision-memory init
+```
+
+This creates:
+```
+.decisions/
+├── active/          # Current decisions
+├── superseded/      # Replaced by newer decisions
+├── archived/        # No longer relevant
+└── index.json       # Auto-generated index for fast queries
+```
+
+### Record your first decision
+
+```bash
+decision-memory record \
+  --summary "Use Zod for all runtime validation" \
+  --rationale "Type-safe, composable, works with TS inference" \
+  --scope "src/**/*.ts,api/**/*.ts" \
+  --tags "validation,schema" \
+  --author "rheapatel"
+```
+
+### Check decisions for a file
+
+```bash
+decision-memory check src/api/users.ts
+```
+
+Output:
+```
+1 decision(s) apply to src/api/users.ts:
+
+  [dec_20260212_abc123] Use Zod for all runtime validation
+    Rationale: Type-safe, composable, works with TS inference
+    Scope: src/**/*.ts, api/**/*.ts
+    Tags: validation, schema
+```
+
+---
+
+## Integration with Claude Code
+
+decision-memory integrates with Claude Code in two ways: as an **MCP server** (so Claude can record and query decisions) and as a **PostToolUse hook** (so Claude is automatically warned about relevant decisions when editing files).
+
+### 1. MCP Server setup
+
+Add to your Claude Code MCP configuration (`.claude/settings.json` or via the Claude Code UI):
+
+```json
+{
+  "mcpServers": {
+    "decision-memory": {
+      "command": "npx",
+      "args": ["-y", "decision-memory", "serve"]
+    }
+  }
+}
+```
+
+This gives Claude four tools:
+
+| Tool | Description |
+|------|-------------|
+| `query_decisions` | Find decisions relevant to a file path or topic |
+| `record_decision` | Record a new architectural decision |
+| `list_decisions` | List all decisions, filterable by status/tags |
+| `get_decision` | Get full details of a specific decision by ID |
+
+Claude will automatically use `query_decisions` when you ask about conventions, and `record_decision` when an architectural choice is made.
+
+### 2. PostToolUse hook setup
+
+Add to your project's `.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "command": ".claude/hooks/check-decisions.sh"
+      }
+    ]
+  }
+}
+```
+
+The hook runs after every `Write` or `Edit` tool call. If the file being edited matches any active decision scopes, Claude receives an advisory system message:
+
+> Advisory: 1 existing architectural decision(s) may apply to this file:
+> - Use Zod for all runtime validation (scope: src/\*\*/\*.ts) [ID: dec_20260212_abc123]
+>
+> These are advisory — you may proceed, but consider whether your changes align with these decisions.
+
+The hook script is created automatically by `decision-memory init` at `.claude/hooks/check-decisions.sh`.
+
+### 3. `/decide` slash command
+
+`decision-memory init` also creates a custom slash command at `.claude/commands/decide.md`. Use it during a conversation:
+
+```
+/decide
+```
+
+Claude will review the conversation, identify architectural decisions that were made, and call `record_decision` for each one. This is the easiest way to capture decisions — just have your normal conversation, then run `/decide` at the end.
+
+---
+
+## Integration with GitHub Copilot CLI
+
+GitHub Copilot CLI (`gh copilot`) can work with decision-memory through the CLI interface. While Copilot doesn't support MCP servers directly, you can incorporate decision-memory into your workflow in several ways.
+
+### 1. Pre-check before asking Copilot
+
+Before asking Copilot to modify code, check what decisions apply:
+
+```bash
+# Check decisions before asking Copilot to edit a file
+decision-memory check src/api/auth.ts
+
+# Then ask Copilot with that context
+gh copilot suggest "add OAuth support to src/api/auth.ts"
+```
+
+### 2. Shell alias for Copilot-aware editing
+
+Add to your `.bashrc` or `.zshrc`:
+
+```bash
+# Wrapper that checks decisions before invoking Copilot
+copilot-edit() {
+  local file="$1"
+  shift
+
+  # Check for relevant decisions
+  local decisions
+  decisions=$(decision-memory check "$file" 2>/dev/null)
+  if [ -n "$decisions" ] && ! echo "$decisions" | grep -q "No decisions"; then
+    echo "--- Relevant decisions ---"
+    echo "$decisions"
+    echo "---"
+    echo ""
+  fi
+
+  gh copilot suggest "$@"
+}
+```
+
+### 3. Git pre-commit hook
+
+Add decision awareness to your commit workflow. Create `.git/hooks/pre-commit`:
+
+```bash
+#!/usr/bin/env bash
+# Check if any modified files conflict with recorded decisions
+
+CHANGED_FILES=$(git diff --cached --name-only)
+WARNINGS=""
+
+for file in $CHANGED_FILES; do
+  result=$(decision-memory check "$file" --json 2>/dev/null || echo "[]")
+  count=$(echo "$result" | jq 'length' 2>/dev/null || echo "0")
+  if [ "$count" -gt 0 ]; then
+    summaries=$(echo "$result" | jq -r '.[].summary' 2>/dev/null)
+    WARNINGS="${WARNINGS}\n  ${file}:"
+    while IFS= read -r summary; do
+      WARNINGS="${WARNINGS}\n    - ${summary}"
+    done <<< "$summaries"
+  fi
+done
+
+if [ -n "$WARNINGS" ]; then
+  echo "Decision Memory: The following decisions may be relevant to your changes:"
+  echo -e "$WARNINGS"
+  echo ""
+  echo "Review with: decision-memory check <file>"
+  echo "Proceeding with commit (advisory only)."
+fi
+```
+
+### 4. GitHub Actions for PR review
+
+Add `.github/workflows/decision-check.yml` to surface decisions in pull request reviews:
+
+```yaml
+name: Decision Check
+on: [pull_request]
+
+jobs:
+  check-decisions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm install -g decision-memory
+
+      - name: Check changed files against decisions
+        run: |
+          COMMENT=""
+          for file in $(git diff --name-only origin/${{ github.base_ref }}...HEAD); do
+            result=$(decision-memory check "$file" --json 2>/dev/null || echo "[]")
+            count=$(echo "$result" | jq 'length' 2>/dev/null || echo "0")
+            if [ "$count" -gt 0 ]; then
+              summaries=$(echo "$result" | jq -r '.[] | "- **\(.summary)** (`\(.id)`)\n  Scope: \(.scope | join(", "))"')
+              COMMENT="${COMMENT}\n### ${file}\n${summaries}\n"
+            fi
+          done
+
+          if [ -n "$COMMENT" ]; then
+            echo "## Decision Memory" > /tmp/comment.md
+            echo "" >> /tmp/comment.md
+            echo "The following architectural decisions may be relevant to this PR:" >> /tmp/comment.md
+            echo -e "$COMMENT" >> /tmp/comment.md
+            echo "" >> /tmp/comment.md
+            echo "*These are advisory — review and proceed if the changes are intentional.*" >> /tmp/comment.md
+
+            gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/comment.md
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+---
+
+## Integration with any AI agent
+
+decision-memory is designed to work with any AI coding tool. The core pattern:
+
+1. **Before editing**: Run `decision-memory check <file> --json` to get relevant decisions as structured data
+2. **Include in prompt**: Feed the decisions into your agent's system prompt or context
+3. **After decisions are made**: Run `decision-memory record` to capture new decisions
+
+The MCP server follows the open [Model Context Protocol](https://modelcontextprotocol.io) standard, so any MCP-compatible client can use it natively.
+
+---
+
+## Decision file format
+
+Each decision is a markdown file with YAML frontmatter:
+
+```markdown
+---
+id: dec_20260212_abc123
+summary: Use Zod for all runtime validation
+rationale: Type-safe, composable, works with TS inference
+scope:
+  - "src/**/*.ts"
+  - "api/**/*.ts"
+tags:
+  - validation
+  - schema
+author: rheapatel
+source: conversation
+confidence: explicit
+status: active
+created: 2026-02-12T09:30:00Z
+---
+
+## Context
+
+Evaluated Joi, Yup, and Zod during API layer implementation.
+
+## Consequences
+
+All API schemas defined with Zod. Types inferred, no duplication.
+```
+
+### Frontmatter fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Unique ID (`dec_YYYYMMDD_<nanoid>`) |
+| `summary` | string | One-line summary of the decision |
+| `rationale` | string | Why this choice was made |
+| `scope` | string[] | Glob patterns for files this applies to |
+| `tags` | string[] | Categorization tags |
+| `author` | string | Who made or recorded the decision |
+| `source` | enum | `conversation`, `cli`, `hook`, or `review` |
+| `confidence` | enum | `explicit` (stated), `inferred` (detected), or `suggested` |
+| `status` | enum | `active`, `superseded`, or `archived` |
+| `created` | ISO 8601 | When the decision was recorded |
+| `updated` | ISO 8601 | When last modified (optional) |
+| `supersededBy` | string | ID of the replacing decision (optional) |
+
+### Body sections
+
+- **Context**: Background on what was being discussed or evaluated
+- **Consequences**: What follows from this decision — what changes, what's locked in
+
+### Index file
+
+`.decisions/index.json` is auto-generated for fast file-to-decision lookups:
+
+```json
+{
+  "version": 1,
+  "updated": "2026-02-12T10:00:00Z",
+  "decisions": [
+    {
+      "id": "dec_20260212_abc123",
+      "summary": "Use Zod for all runtime validation",
+      "scope": ["src/**/*.ts", "api/**/*.ts"],
+      "tags": ["validation", "schema"],
+      "status": "active",
+      "created": "2026-02-12T09:30:00Z",
+      "file": "active/use-zod-for-all-runtime-validation.md"
+    }
+  ]
+}
+```
+
+---
+
+## CLI reference
+
+### `decision-memory init`
+
+Initialize decision tracking in the current project. Creates the `.decisions/` directory structure, copies the hook script to `.claude/hooks/`, and copies the `/decide` slash command to `.claude/commands/`.
+
+### `decision-memory record`
+
+Record a new decision from the command line.
+
+```bash
+decision-memory record \
+  --summary "Use PostgreSQL for persistence" \
+  --rationale "ACID compliance, JSON support, mature ecosystem" \
+  --scope "src/db/**/*.ts,src/models/**/*.ts" \
+  --tags "database,persistence" \
+  --author "rheapatel" \
+  --confidence explicit \
+  --context "Evaluated SQLite, MySQL, and PostgreSQL" \
+  --consequences "All persistence goes through pg driver"
+```
+
+**Options:**
+| Flag | Required | Default | Description |
+|------|----------|---------|-------------|
+| `--summary` | Yes | — | One-line summary |
+| `--rationale` | Yes | — | Why this was chosen |
+| `--scope` | Yes | — | Comma-separated glob patterns |
+| `--tags` | No | `""` | Comma-separated tags |
+| `--author` | No | `cli-user` | Author name |
+| `--confidence` | No | `explicit` | `explicit`, `inferred`, or `suggested` |
+| `--context` | No | — | Additional context |
+| `--consequences` | No | — | Expected consequences |
+
+### `decision-memory check <file>`
+
+Query decisions that apply to a specific file path.
+
+```bash
+decision-memory check src/api/users.ts
+decision-memory check src/api/users.ts --json   # Structured output
+```
+
+### `decision-memory list`
+
+List all recorded decisions.
+
+```bash
+decision-memory list
+decision-memory list --status active
+decision-memory list --tags validation,schema
+decision-memory list --json
+```
+
+### `decision-memory serve`
+
+Start the MCP server for use with Claude Code or other MCP-compatible clients. Communicates over stdio.
+
+```bash
+decision-memory serve
+```
+
+---
+
+## MCP tools reference
+
+When running as an MCP server, decision-memory exposes four tools:
+
+### `query_decisions`
+
+Find decisions relevant to a file path or topic.
+
+**Parameters:**
+- `file_path` (string, optional): File path to check against decision scopes
+- `tags` (string[], optional): Filter by tags
+
+### `record_decision`
+
+Record a new architectural decision.
+
+**Parameters:**
+- `summary` (string, required): One-line summary
+- `rationale` (string, required): Why this decision was made
+- `scope` (string[], required): Glob patterns for affected files
+- `tags` (string[], required): Categorization tags
+- `author` (string, default: `"claude"`): Who made the decision
+- `context` (string, optional): Additional context
+- `consequences` (string, optional): Expected consequences
+- `confidence` (enum, default: `"explicit"`): `explicit`, `inferred`, or `suggested`
+
+### `list_decisions`
+
+List all decisions with optional filters.
+
+**Parameters:**
+- `status` (enum, optional): `active`, `superseded`, or `archived`
+- `tags` (string[], optional): Filter by tags
+
+### `get_decision`
+
+Get full details of a specific decision.
+
+**Parameters:**
+- `id` (string, required): Decision ID
+
+---
+
+## Philosophy
+
+### Advisory, not blocking
+
+decision-memory never prevents you from doing anything. It surfaces information — "here's what was decided before" — and lets you make the call. If the previous decision was wrong, override it. The record updates.
+
+### Decisions are living documents
+
+Decisions aren't set in stone. They can be:
+- **Superseded**: A new decision replaces the old one (the old one moves to `.decisions/superseded/`)
+- **Archived**: The decision is no longer relevant (moved to `.decisions/archived/`)
+- **Updated**: The rationale or scope changes as understanding evolves
+
+### Human-readable first
+
+Decisions are markdown files. You can read them with `cat`, edit them with `vim`, review them in GitHub, diff them in PRs. The JSON index is a cache — the markdown files are the source of truth.
+
+### Works with your version control
+
+`.decisions/` lives in your repo. Decisions show up in diffs, get reviewed in PRs, and travel with the code. When someone forks your project, they get your architectural context too.
+
+---
+
+## Examples
+
+### Capture decisions from a coding session
+
+During a session with Claude Code:
+
+```
+You: Let's use tRPC for the API layer instead of REST
+Claude: [records decision automatically or you run /decide]
+```
+
+Later, when editing API code:
+
+```
+Claude: Advisory: 1 existing architectural decision may apply:
+  - Use tRPC for the API layer (scope: src/api/**/*.ts)
+  You're creating a REST endpoint — want to proceed or use tRPC instead?
+```
+
+### Review decisions before starting work
+
+```bash
+$ decision-memory list --status active
+
+3 decision(s):
+
+  [ACTIVE] Use Zod for all runtime validation (dec_20260212_abc123)
+    validation, schema
+  [ACTIVE] Use tRPC for the API layer (dec_20260212_def456)
+    api, architecture
+  [ACTIVE] All dates stored as UTC ISO 8601 (dec_20260210_ghi789)
+    data, conventions
+```
+
+### Check a file before modifying it
+
+```bash
+$ decision-memory check src/api/routes/users.ts
+
+2 decision(s) apply to src/api/routes/users.ts:
+
+  [dec_20260212_abc123] Use Zod for all runtime validation
+    Rationale: Type-safe, composable, works with TS inference
+    Scope: src/**/*.ts, api/**/*.ts
+    Tags: validation, schema
+
+  [dec_20260212_def456] Use tRPC for the API layer
+    Rationale: End-to-end type safety, no code generation
+    Scope: src/api/**/*.ts
+    Tags: api, architecture
+```
+
+---
+
+## Tech stack
+
+- **TypeScript** — Node.js 20+, ES2022 modules
+- **[@modelcontextprotocol/sdk](https://www.npmjs.com/package/@modelcontextprotocol/sdk)** — MCP server implementation
+- **[commander](https://www.npmjs.com/package/commander)** — CLI framework
+- **[gray-matter](https://www.npmjs.com/package/gray-matter)** — YAML frontmatter parsing
+- **[minimatch](https://www.npmjs.com/package/minimatch)** — Glob pattern matching
+- **[zod](https://www.npmjs.com/package/zod)** — Tool input validation
+- **[nanoid](https://www.npmjs.com/package/nanoid)** — ID generation
+- **[vitest](https://www.npmjs.com/package/vitest)** — Testing
+
+## License
+
+MIT
