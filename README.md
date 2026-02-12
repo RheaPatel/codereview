@@ -1,21 +1,17 @@
 # decision-memory
 
-Automatically capture, store, and surface architectural decisions made during AI-assisted coding sessions.
+Institutional memory for your codebase. Captures the *why* behind architectural decisions and surfaces them when they matter.
 
-## This is not a CLAUDE.md
+Every codebase accumulates decisions that aren't obvious from the code itself. Why the auth module is synchronous. Why the extension can't touch the payments API. Why caching was removed from the profile endpoint. These choices have real rationale — constraints, tradeoffs, lessons learned — but that context lives in chat history, PR threads, and people's heads. When someone new (or an AI) works in that area later, they don't know the history. They re-introduce caching. They wire the extension into payments. They make the same mistake because the *why* was never recorded.
 
-A `CLAUDE.md` or rules file tells an AI agent *what to do*: "use Zod", "format with Prettier", "run tests before committing." Those are instructions — static, universal, always-on.
-
-**decision-memory** captures *why* something was decided, scoped to the code it affects. These are the contextual, nuanced choices that get made in conversation and then lost:
+**decision-memory** captures these decisions as structured, scoped markdown files and surfaces them at the right moment — when you or your AI assistant touch affected code:
 
 - "We chose not to expose the payments API to the browser extension because of PCI scope implications"
 - "Kept the auth module synchronous to preserve backward compatibility with the v1 SDK consumers"
 - "Went with server-side rendering for the dashboard to avoid exposing analytics API keys to the client"
 - "Decided against caching user profiles because the data changes too frequently and stale data caused support tickets"
 
-These aren't instructions. They're institutional memory — the kind of context that saves someone (or an AI) from re-making a bad decision three months later because they didn't know the history.
-
-**decision-memory** records these decisions as structured markdown files, indexes them by file scope, and surfaces relevant ones when you (or your AI) touch affected code. It's advisory, not blocking — a nudge that says "hey, this area has context you should know about before changing things."
+It's advisory, not blocking. A nudge that says "hey, this area has context you should know about before changing things." You can always override a decision — the record updates.
 
 ## How it works
 
@@ -490,14 +486,6 @@ Get full details of a specific decision.
 
 ## Philosophy
 
-### Not instructions — context
-
-A config file says "use Prettier with 2-space tabs." That's an instruction — it applies everywhere, always.
-
-A decision says "we kept the auth module synchronous because the v1 SDK consumers depend on it being blocking, and migrating them is out of scope this quarter." That's context — it explains a constraint that might not be obvious, scoped to specific code, with a rationale that might change over time.
-
-decision-memory is for the second kind. If you find yourself writing something that reads like a lint rule or a coding standard, it probably belongs in CLAUDE.md or your linter config instead.
-
 ### Advisory, not blocking
 
 decision-memory never prevents you from doing anything. It surfaces information — "here's what was decided before, and why" — and lets you make the call. If the situation has changed, override the decision. The record updates.
@@ -534,15 +522,6 @@ These are real scenarios where decision-memory shines — situations where someo
 | "Browser extension must not import anything from `src/api/payments/`" | PCI compliance scope. An AI agent would have no way to know this without being told. |
 | "The `/admin` routes intentionally skip rate limiting" | Internal tooling, and rate limiting broke batch operations. Looks like a security bug if you don't know why. |
 | "We chose Postgres over DynamoDB for the audit log" | Need complex queries for compliance reporting. Looks like it should be a simple append-only log, but the query patterns matter. |
-
-### What this is NOT for
-
-These belong in CLAUDE.md, `.eslintrc`, or your linter — not in decision-memory:
-
-- "Use 2-space indentation" (that's a formatting rule)
-- "Always use `const` instead of `let`" (that's a lint rule)
-- "Run `npm test` before committing" (that's a workflow instruction)
-- "Use Zod for validation" (that's an instruction — unless there's a *reason* you chose Zod over alternatives, in which case the rationale is the decision)
 
 ### Capture decisions from a coding session
 
