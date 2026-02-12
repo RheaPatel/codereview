@@ -2,9 +2,20 @@
 
 Automatically capture, store, and surface architectural decisions made during AI-assisted coding sessions.
 
-When you're building with an AI coding assistant — Claude Code, GitHub Copilot CLI, or anything else — dozens of architectural decisions get made in conversation. "Use Zod for validation." "Put auth middleware in `src/middleware/`." "Prefer composition over inheritance in the data layer." These decisions live in chat history and vanish when the session ends.
+## This is not a CLAUDE.md
 
-**decision-memory** solves this. It records decisions as structured markdown files, indexes them by file scope, and surfaces relevant ones when you (or your AI) touch affected code. It's advisory, not blocking — a nudge that says "hey, 2 weeks ago you decided to use Zod here, and now you're adding Joi. Want to proceed?"
+A `CLAUDE.md` or rules file tells an AI agent *what to do*: "use Zod", "format with Prettier", "run tests before committing." Those are instructions — static, universal, always-on.
+
+**decision-memory** captures *why* something was decided, scoped to the code it affects. These are the contextual, nuanced choices that get made in conversation and then lost:
+
+- "We chose not to expose the payments API to the browser extension because of PCI scope implications"
+- "Kept the auth module synchronous to preserve backward compatibility with the v1 SDK consumers"
+- "Went with server-side rendering for the dashboard to avoid exposing analytics API keys to the client"
+- "Decided against caching user profiles because the data changes too frequently and stale data caused support tickets"
+
+These aren't instructions. They're institutional memory — the kind of context that saves someone (or an AI) from re-making a bad decision three months later because they didn't know the history.
+
+**decision-memory** records these decisions as structured markdown files, indexes them by file scope, and surfaces relevant ones when you (or your AI) touch affected code. It's advisory, not blocking — a nudge that says "hey, this area has context you should know about before changing things."
 
 ## How it works
 
@@ -292,14 +303,15 @@ Each decision is a markdown file with YAML frontmatter:
 ```markdown
 ---
 id: dec_20260212_abc123
-summary: Use Zod for all runtime validation
-rationale: Type-safe, composable, works with TS inference
+summary: Do not expose payment endpoints to browser extension API
+rationale: Browser extension context has weaker isolation; exposing payment APIs would bring the extension into PCI DSS scope
 scope:
-  - "src/**/*.ts"
-  - "api/**/*.ts"
+  - "src/api/payments/**/*.ts"
+  - "src/extension/**/*.ts"
 tags:
-  - validation
-  - schema
+  - security
+  - payments
+  - extension
 author: rheapatel
 source: conversation
 confidence: explicit
@@ -309,11 +321,18 @@ created: 2026-02-12T09:30:00Z
 
 ## Context
 
-Evaluated Joi, Yup, and Zod during API layer implementation.
+During the browser extension build-out, we considered letting the extension
+call the payments API directly. After reviewing PCI DSS requirements, we
+determined that exposing payment endpoints to the extension would require
+the extension to be in scope for PCI compliance, which adds significant
+audit and security overhead.
 
 ## Consequences
 
-All API schemas defined with Zod. Types inferred, no duplication.
+The extension must go through the main web app for any payment-related
+actions. No payment types, schemas, or API clients should be imported in
+the extension codebase. If a user needs to make a payment from the extension,
+redirect them to the web app.
 ```
 
 ### Frontmatter fields
@@ -349,12 +368,12 @@ All API schemas defined with Zod. Types inferred, no duplication.
   "decisions": [
     {
       "id": "dec_20260212_abc123",
-      "summary": "Use Zod for all runtime validation",
-      "scope": ["src/**/*.ts", "api/**/*.ts"],
-      "tags": ["validation", "schema"],
+      "summary": "Do not expose payment endpoints to browser extension API",
+      "scope": ["src/api/payments/**/*.ts", "src/extension/**/*.ts"],
+      "tags": ["security", "payments", "extension"],
       "status": "active",
       "created": "2026-02-12T09:30:00Z",
-      "file": "active/use-zod-for-all-runtime-validation.md"
+      "file": "active/do-not-expose-payment-endpoints-to-browser-extension.md"
     }
   ]
 }
@@ -471,9 +490,17 @@ Get full details of a specific decision.
 
 ## Philosophy
 
+### Not instructions — context
+
+A config file says "use Prettier with 2-space tabs." That's an instruction — it applies everywhere, always.
+
+A decision says "we kept the auth module synchronous because the v1 SDK consumers depend on it being blocking, and migrating them is out of scope this quarter." That's context — it explains a constraint that might not be obvious, scoped to specific code, with a rationale that might change over time.
+
+decision-memory is for the second kind. If you find yourself writing something that reads like a lint rule or a coding standard, it probably belongs in CLAUDE.md or your linter config instead.
+
 ### Advisory, not blocking
 
-decision-memory never prevents you from doing anything. It surfaces information — "here's what was decided before" — and lets you make the call. If the previous decision was wrong, override it. The record updates.
+decision-memory never prevents you from doing anything. It surfaces information — "here's what was decided before, and why" — and lets you make the call. If the situation has changed, override the decision. The record updates.
 
 ### Decisions are living documents
 
@@ -481,6 +508,8 @@ Decisions aren't set in stone. They can be:
 - **Superseded**: A new decision replaces the old one (the old one moves to `.decisions/superseded/`)
 - **Archived**: The decision is no longer relevant (moved to `.decisions/archived/`)
 - **Updated**: The rationale or scope changes as understanding evolves
+
+This is different from rules, which are either on or off. Decisions evolve as the project evolves.
 
 ### Human-readable first
 
@@ -494,21 +523,48 @@ Decisions are markdown files. You can read them with `cat`, edit them with `vim`
 
 ## Examples
 
+### The kind of decisions this is for
+
+These are real scenarios where decision-memory shines — situations where someone (or an AI) working in the code later would benefit from knowing the backstory:
+
+| Decision | Why it matters |
+|----------|---------------|
+| "Don't add caching to the user profile endpoint" | Previous team tried it, stale data caused a wave of support tickets. Without this context, the next engineer will try caching again. |
+| "Keep the notification service as a separate process" | Embedding it caused memory issues under load. Looks like unnecessary complexity if you don't know the history. |
+| "Browser extension must not import anything from `src/api/payments/`" | PCI compliance scope. An AI agent would have no way to know this without being told. |
+| "The `/admin` routes intentionally skip rate limiting" | Internal tooling, and rate limiting broke batch operations. Looks like a security bug if you don't know why. |
+| "We chose Postgres over DynamoDB for the audit log" | Need complex queries for compliance reporting. Looks like it should be a simple append-only log, but the query patterns matter. |
+
+### What this is NOT for
+
+These belong in CLAUDE.md, `.eslintrc`, or your linter — not in decision-memory:
+
+- "Use 2-space indentation" (that's a formatting rule)
+- "Always use `const` instead of `let`" (that's a lint rule)
+- "Run `npm test` before committing" (that's a workflow instruction)
+- "Use Zod for validation" (that's an instruction — unless there's a *reason* you chose Zod over alternatives, in which case the rationale is the decision)
+
 ### Capture decisions from a coding session
 
 During a session with Claude Code:
 
 ```
-You: Let's use tRPC for the API layer instead of REST
-Claude: [records decision automatically or you run /decide]
+You: Can we add the payment flow to the browser extension?
+Claude: Looking at this, exposing payment endpoints to the extension
+        would bring it into PCI DSS scope. I'd recommend keeping
+        payments in the main web app and redirecting from the extension.
+You: Good call, let's do that.
+Claude: [records decision via record_decision tool or you run /decide]
 ```
 
-Later, when editing API code:
+Later, when someone edits extension code:
 
 ```
 Claude: Advisory: 1 existing architectural decision may apply:
-  - Use tRPC for the API layer (scope: src/api/**/*.ts)
-  You're creating a REST endpoint — want to proceed or use tRPC instead?
+  - Do not expose payment endpoints to browser extension API
+    (PCI DSS scope implications)
+  This file is in the extension codebase — payment-related imports
+  are intentionally excluded here. Want to proceed?
 ```
 
 ### Review decisions before starting work
@@ -518,30 +574,26 @@ $ decision-memory list --status active
 
 3 decision(s):
 
-  [ACTIVE] Use Zod for all runtime validation (dec_20260212_abc123)
-    validation, schema
-  [ACTIVE] Use tRPC for the API layer (dec_20260212_def456)
-    api, architecture
-  [ACTIVE] All dates stored as UTC ISO 8601 (dec_20260210_ghi789)
-    data, conventions
+  [ACTIVE] Do not expose payment endpoints to browser extension API (dec_20260212_abc123)
+    security, payments, extension
+  [ACTIVE] Keep notification service as separate process (dec_20260210_def456)
+    architecture, performance
+  [ACTIVE] Skip rate limiting on /admin routes (dec_20260208_ghi789)
+    security, admin, intentional
 ```
 
 ### Check a file before modifying it
 
 ```bash
-$ decision-memory check src/api/routes/users.ts
+$ decision-memory check src/extension/api/client.ts
 
-2 decision(s) apply to src/api/routes/users.ts:
+1 decision(s) apply to src/extension/api/client.ts:
 
-  [dec_20260212_abc123] Use Zod for all runtime validation
-    Rationale: Type-safe, composable, works with TS inference
-    Scope: src/**/*.ts, api/**/*.ts
-    Tags: validation, schema
-
-  [dec_20260212_def456] Use tRPC for the API layer
-    Rationale: End-to-end type safety, no code generation
-    Scope: src/api/**/*.ts
-    Tags: api, architecture
+  [dec_20260212_abc123] Do not expose payment endpoints to browser extension API
+    Rationale: Browser extension context has weaker isolation; exposing
+    payment APIs would bring the extension into PCI DSS scope
+    Scope: src/api/payments/**/*.ts, src/extension/**/*.ts
+    Tags: security, payments, extension
 ```
 
 ---
