@@ -15,25 +15,75 @@ It's advisory, not blocking. A nudge that says "hey, this area has context you s
 
 ## How it works
 
-```
-AI Coding Session (Claude Code / Copilot CLI / any agent)
-       |
-  +---------+----------+
-  |                    |
-MCP Server          Hooks / CLI
-(record/query)      (surface warnings)
-  |                    |
-  +--------+-----------+
-           |
-     DecisionStore
-           |
-     .decisions/
-     (markdown + JSON index)
+### Recording a decision
+
+When an architectural choice is made during a coding session, it gets captured and stored as a scoped, queryable markdown file.
+
+```mermaid
+flowchart LR
+    A["Coding session\n(Claude Code, Copilot, etc.)"] --> B{"How to record?"}
+    B -->|AI calls tool| C["MCP Server\nrecord_decision"]
+    B -->|User runs command| D["CLI\ndecision-memory record"]
+    B -->|End of session| E["Slash command\n/decide"]
+    C --> F["DecisionStore"]
+    D --> F
+    E --> C
+    F --> G[".decisions/active/\ndo-not-expose-payments.md"]
+    F --> H[".decisions/index.json\n(auto-generated)"]
 ```
 
-1. **Record**: During a session, decisions are captured — either explicitly via a command, or automatically by the AI calling the `record_decision` tool
-2. **Store**: Each decision becomes a markdown file with YAML frontmatter in `.decisions/active/`, plus a generated `index.json` for fast lookups
-3. **Surface**: When code is edited, relevant decisions are surfaced as advisory warnings — the AI sees them in context and can warn you about conflicts
+### Surfacing at the right moment
+
+When code is edited — by a human or an AI — relevant decisions are automatically surfaced as advisory context.
+
+```mermaid
+flowchart LR
+    A["Edit a file\nsrc/extension/api.ts"] --> B["PostToolUse Hook\n(Write / Edit)"]
+    B --> C["decision-memory check\nsrc/extension/api.ts"]
+    C --> D["Match file against\nall decision scopes"]
+    D --> E{"Decisions\nfound?"}
+    E -->|Yes| F["Advisory warning injected\ninto AI context"]
+    E -->|No| G["Silent, no action"]
+    F --> H["'Payment endpoints are excluded\nfrom the extension (PCI scope) —\nproceed?'"]
+```
+
+### Lifecycle of a decision
+
+Decisions aren't permanent — they evolve with the project.
+
+```mermaid
+flowchart LR
+    A["Decision recorded"] --> B[".decisions/active/"]
+    B --> C{"What happens\nnext?"}
+    C -->|Still valid| B
+    C -->|Better approach found| D[".decisions/superseded/"]
+    C -->|No longer relevant| E[".decisions/archived/"]
+    D --> F["New decision\nrecorded in active/"]
+```
+
+### Where it fits in your workflow
+
+```mermaid
+flowchart TB
+    subgraph During Development
+        A["AI coding session"] --> B["Decisions made\nin conversation"]
+        B --> C["Record via MCP tool,\nCLI, or /decide"]
+    end
+
+    subgraph On Every Edit
+        D["File modified"] --> E["Hook checks\ndecision scopes"]
+        E --> F["Advisory surfaced\nif relevant"]
+    end
+
+    subgraph In CI/CD
+        G["PR opened"] --> H["GitHub Action checks\nchanged files"]
+        H --> I["PR comment with\nrelevant decisions"]
+    end
+
+    C --> J[".decisions/"]
+    J --> E
+    J --> H
+```
 
 ## Quick start
 
